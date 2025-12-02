@@ -48,21 +48,32 @@ def process_file(file, nav):
     df["Avg # Of Days"] = df["WeightFromNAV"] * df["RemainPeriod"]
     df["NAV"] = nav
 
-    # New columns
+    # New columns:
     # Price = 1 / ((NumOfDays * RatePercent)/365) + 1
     df["Price"] = 1 / ((df["NumOfDays"] * df["RatePercent"]) / 365) + 1
 
-    # PX = Price rounded to 5 dp (for preview; Excel will also have ROUND(...,5))
+    # PX = Price rounded to 5 dp (preview; Excel has ROUND)
     df["PX"] = df["Price"].round(5)
 
     # Present Value = PurchaseValue * PX
     df["Present Value"] = df["PurchaseValue"] * df["PX"]
 
+    # Accruals = (100 - (Price * 100)) * (TodayDate - PurchaseDate) / NumOfDays
+    # Use day count difference
+    days_diff = (df["TodayDate"] - df["PurchaseDate"]).dt.days
+    df["Accruals"] = (100 - (df["Price"] * 100)) * (days_diff / df["NumOfDays"])
+
+    # New PX = (PX * 100) + Accruals
+    df["New PX"] = (df["PX"] * 100) + df["Accruals"]
+
+    # Breakeven = 365 * ((100 / New PX) - 1) / RemainPeriod
+    df["Breakeven"] = 365 * ((100 / df["New PX"]) - 1) / df["RemainPeriod"]
+
     # Sort by ascending remaining period
     if "RemainPeriod" in df.columns:
         df = df.sort_values("RemainPeriod", ascending=True)
 
-    # Rounding for preview (Excel formatting is handled separately)
+    # Rounding for preview (Excel handles actual number formats)
     num_cols_preview = df.select_dtypes(include=["float64", "int64"]).columns
     for col in num_cols_preview:
         if col == "PX":
@@ -70,7 +81,7 @@ def process_file(file, nav):
         else:
             df[col] = df[col].round(2)
 
-    # TOTAL row for preview only
+    # TOTAL row for preview only (same set as before)
     sum_row = {
         "Bank": "TOTAL",
         "FaceValue": df["FaceValue"].sum(),
@@ -92,6 +103,9 @@ def process_file(file, nav):
         "After Tax",
         "Price",
         "PX",
+        "Accruals",
+        "New PX",
+        "Breakeven",
         "PurchaseValue",
         "Present Value",
         "PurchaseDate",
@@ -233,7 +247,39 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
                 value=f"={c_purchase}*{c_px}"
             )
 
-    # TOTAL row with SUM formulas (same as before)
+        # Accruals = (100 - (Price * 100)) * ((TodayDate - PurchaseDate) / NumOfDays)
+        if "Accruals" in col_index:
+            c_price = ws.cell(row=r, column=col_index["Price"]).coordinate
+            c_today = ws.cell(row=r, column=col_index["TodayDate"]).coordinate
+            c_pur = ws.cell(row=r, column=col_index["PurchaseDate"]).coordinate
+            c_days = ws.cell(row=r, column=col_index["NumOfDays"]).coordinate
+            ws.cell(
+                row=r,
+                column=col_index["Accruals"],
+                value=f"=(100-({c_price}*100))*(({c_today}-{c_pur})/{c_days})"
+            )
+
+        # New PX = (PX * 100) + Accruals
+        if "New PX" in col_index:
+            c_px = ws.cell(row=r, column=col_index["PX"]).coordinate
+            c_accr = ws.cell(row=r, column=col_index["Accruals"]).coordinate
+            ws.cell(
+                row=r,
+                column=col_index["New PX"],
+                value=f"=({c_px}*100)+{c_accr}"
+            )
+
+        # Breakeven = 365 * ((100/New PX) - 1) / RemainPeriod
+        if "Breakeven" in col_index:
+            c_newpx = ws.cell(row=r, column=col_index["New PX"]).coordinate
+            c_remain = ws.cell(row=r, column=col_index["RemainPeriod"]).coordinate
+            ws.cell(
+                row=r,
+                column=col_index["Breakeven"],
+                value=f"=365*((100/{c_newpx})-1)/{c_remain}"
+            )
+
+    # TOTAL row with SUM formulas (same set as earlier)
     ws.cell(row=total_row_idx, column=col_index["Bank"], value="TOTAL")
 
     def add_sum(col_name):
@@ -263,6 +309,7 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
 
     numeric_columns = [
         "FaceValue", "RatePercent", "After Tax", "Price", "PX",
+        "Accruals", "New PX", "Breakeven",
         "PurchaseValue", "Present Value", "WeightFromNAV", "AvgReturn",
         "NumOfDays", "RemainPeriod", "Avg # Of Days",
         "PaidValue", "CurrentAccrude", "Tax", "NAV"
