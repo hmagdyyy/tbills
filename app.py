@@ -50,7 +50,7 @@ def process_file(file, nav):
 
     # New columns:
     # Price = 1 / ((NumOfDays * RatePercent)/365) + 1
-    df["Price"] = 1 / (((df["NumOfDays"] * df["RatePercent"]) / 365) + 1)
+    df["Price"] = 365 / ((df["NumOfDays"] * df["RatePercent"]) + 365)
 
     # PX = Price rounded to 5 dp (preview; Excel has ROUND)
     df["PX"] = df["Price"].round(5)
