@@ -50,13 +50,11 @@ def process_file(file, nav):
 
     # New columns:
     # Price = 1 / ((NumOfDays * RatePercent)/365) + 1
-    df["Price"] = 1 / ((df["NumOfDays"] * df["RatePercent"]) / 365) + 1
+    df["Price"] = 1 / (((df["NumOfDays"] * df["RatePercent"]) / 365) + 1)
 
     # PX = Price rounded to 5 dp (preview; Excel has ROUND)
     df["PX"] = df["Price"].round(5)
 
-    # Present Value = PurchaseValue * PX
-    df["Present Value"] = df["PurchaseValue"] * df["PX"]
 
     # Accruals = (100 - (Price * 100)) * (TodayDate - PurchaseDate) / NumOfDays
     # Use day count difference
@@ -100,14 +98,7 @@ def process_file(file, nav):
         "Bank",
         "FaceValue",
         "RatePercent",
-        "After Tax",
-        "Price",
-        "PX",
-        "Accruals",
-        "New PX",
-        "Breakeven",
         "PurchaseValue",
-        "Present Value",
         "PurchaseDate",
         "WeightFromNAV",
         "AvgReturn",
@@ -119,6 +110,12 @@ def process_file(file, nav):
         "PaidValue",
         "CurrentAccrude",
         "Tax",
+        "After Tax",
+        "Price",
+        "PX",
+        "Accruals",
+        "New PX",
+        "Breakeven",
         "NAV",
     ]
     final_cols = [c for c in final_cols if c in df.columns]
@@ -237,15 +234,6 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
                 value=f"=ROUND({c_price},5)"
             )
 
-        # Present Value = PurchaseValue * PX
-        if "Present Value" in col_index:
-            c_purchase = ws.cell(row=r, column=col_index["PurchaseValue"]).coordinate
-            c_px = ws.cell(row=r, column=col_index["PX"]).coordinate
-            ws.cell(
-                row=r,
-                column=col_index["Present Value"],
-                value=f"={c_purchase}*{c_px}"
-            )
 
         # Accruals = (100 - (Price * 100)) * ((TodayDate - PurchaseDate) / NumOfDays)
         if "Accruals" in col_index:
@@ -310,7 +298,7 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
     numeric_columns = [
         "FaceValue", "RatePercent", "After Tax", "Price", "PX",
         "Accruals", "New PX", "Breakeven",
-        "PurchaseValue", "Present Value", "WeightFromNAV", "AvgReturn",
+        "PurchaseValue","WeightFromNAV", "AvgReturn",
         "NumOfDays", "RemainPeriod", "Avg # Of Days",
         "PaidValue", "CurrentAccrude", "Tax", "NAV"
     ]
