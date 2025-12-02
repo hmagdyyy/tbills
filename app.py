@@ -9,24 +9,24 @@ st.title("T-Bills NAV Helper")
 
 
 # -----------------------------------------
-# Process the uploaded file into a DataFrame
+# Process the uploaded file into a DataFrame (for preview)
 # -----------------------------------------
 def process_file(file, nav):
     xls = pd.ExcelFile(file)
     sheet_name = xls.sheet_names[0]
 
-    # Read raw to get TodayDate from B3 (row index 2, col index 1)
+    # Get TodayDate from B3 (row index 2, col index 1)
     raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
     today_raw = raw.iloc[2, 1] if raw.shape[0] > 2 and raw.shape[1] > 1 else None
     today_date = pd.to_datetime(today_raw, errors="coerce")
 
-    # Main table (header row = index 7 in zero-based -> row 8 in Excel)
+    # Main table (header row = index 7 -> row 8 in Excel)
     df = pd.read_excel(file, sheet_name=sheet_name, header=7)
 
     # Keep only rows with a Bank
     df = df.dropna(subset=["Bank"])
 
-    # Ensure numeric columns
+    # Numeric columns
     numeric_cols = [
         "FaceValue", "RatePercent", "PurchaseValue", "NumOfDays",
         "RemainPeriod", "PaidValue", "CurrentAccrude", "Tax"
@@ -35,12 +35,12 @@ def process_file(file, nav):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Ensure date columns
+    # Date columns
     for c in ["PurchaseDate", "MaturityDate"]:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
 
-    # Calculations (for display in Streamlit)
+    # Core calculations (for preview)
     df["After Tax"] = df["RatePercent"] * 0.8
     df["WeightFromNAV"] = df["PurchaseValue"] / nav
     df["AvgReturn"] = df["After Tax"] * df["WeightFromNAV"]
@@ -48,16 +48,29 @@ def process_file(file, nav):
     df["Avg # Of Days"] = df["WeightFromNAV"] * df["RemainPeriod"]
     df["NAV"] = nav
 
+    # New columns
+    # Price = 1 / ((NumOfDays * RatePercent)/365) + 1
+    df["Price"] = 1 / ((df["NumOfDays"] * df["RatePercent"]) / 365) + 1
+
+    # PX = Price rounded to 5 dp (for preview; Excel will also have ROUND(...,5))
+    df["PX"] = df["Price"].round(5)
+
+    # Present Value = PurchaseValue * PX
+    df["Present Value"] = df["PurchaseValue"] * df["PX"]
+
     # Sort by ascending remaining period
     if "RemainPeriod" in df.columns:
         df = df.sort_values("RemainPeriod", ascending=True)
 
-    # Rounding for display in Streamlit (Excel will have its own formats)
-    for col in df.columns:
-        if df[col].dtype in ["float64", "int64"]:
+    # Rounding for preview (Excel formatting is handled separately)
+    num_cols_preview = df.select_dtypes(include=["float64", "int64"]).columns
+    for col in num_cols_preview:
+        if col == "PX":
+            df[col] = df[col].round(5)
+        else:
             df[col] = df[col].round(2)
 
-    # Add TOTAL row for display
+    # TOTAL row for preview only
     sum_row = {
         "Bank": "TOTAL",
         "FaceValue": df["FaceValue"].sum(),
@@ -71,12 +84,28 @@ def process_file(file, nav):
     }
     df = pd.concat([df, pd.DataFrame([sum_row])], ignore_index=True)
 
-    # Final column order for output
+    # Final column order
     final_cols = [
-        "Bank", "FaceValue", "RatePercent", "After Tax", "PurchaseValue",
-        "PurchaseDate", "WeightFromNAV", "AvgReturn", "TodayDate", "MaturityDate",
-        "NumOfDays", "RemainPeriod", "Avg # Of Days", "PaidValue",
-        "CurrentAccrude", "Tax", "NAV"
+        "Bank",
+        "FaceValue",
+        "RatePercent",
+        "After Tax",
+        "Price",
+        "PX",
+        "PurchaseValue",
+        "Present Value",
+        "PurchaseDate",
+        "WeightFromNAV",
+        "AvgReturn",
+        "TodayDate",
+        "MaturityDate",
+        "NumOfDays",
+        "RemainPeriod",
+        "Avg # Of Days",
+        "PaidValue",
+        "CurrentAccrude",
+        "Tax",
+        "NAV",
     ]
     final_cols = [c for c in final_cols if c in df.columns]
 
@@ -92,38 +121,46 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
     ws = wb.active
     ws.title = "Result"
 
-    # Same column order as DataFrame
+    # Column order from DataFrame
     final_cols = list(df.columns)
 
-    # Header
+    # Header row
     for col_idx, col_name in enumerate(final_cols, start=1):
         ws.cell(row=1, column=col_idx, value=col_name)
 
-    # Data rows (exclude TOTAL row when writing formulas)
+    # Data rows (exclude TOTAL row; that will be formula-based)
     data_df = df[df["Bank"] != "TOTAL"].reset_index(drop=True)
     rows_no_total = len(data_df)
-    last_data_row = rows_no_total + 1          # Excel row index (data rows from 2..last_data_row)
-    total_row_idx = last_data_row + 1         # TOTAL row
+    last_data_row = rows_no_total + 1   # data rows occupy Excel rows 2..last_data_row
+    total_row_idx = last_data_row + 1   # TOTAL row index
 
-    # Helper: index of a column by name (1-based)
+    # Map: column name -> 1-based index
     col_index = {name: i + 1 for i, name in enumerate(final_cols)}
 
     # Write data rows with formulas
     for i, row in data_df.iterrows():
-        r = i + 2  # Excel row number (header is row 1)
+        r = i + 2  # Excel row (header is row 1)
 
-        # Simple values
+        # Basic values
         ws.cell(row=r, column=col_index["Bank"], value=row["Bank"])
-        ws.cell(row=r, column=col_index["FaceValue"], value=row.get("FaceValue"))
-        ws.cell(row=r, column=col_index["RatePercent"], value=row.get("RatePercent"))
-        ws.cell(row=r, column=col_index["PurchaseValue"], value=row.get("PurchaseValue"))
-        ws.cell(row=r, column=col_index["NumOfDays"], value=row.get("NumOfDays"))
-        ws.cell(row=r, column=col_index["RemainPeriod"], value=row.get("RemainPeriod"))
-        ws.cell(row=r, column=col_index["PaidValue"], value=row.get("PaidValue"))
-        ws.cell(row=r, column=col_index["CurrentAccrude"], value=row.get("CurrentAccrude"))
-        ws.cell(row=r, column=col_index["Tax"], value=row.get("Tax"))
+        if "FaceValue" in col_index:
+            ws.cell(row=r, column=col_index["FaceValue"], value=row.get("FaceValue"))
+        if "RatePercent" in col_index:
+            ws.cell(row=r, column=col_index["RatePercent"], value=row.get("RatePercent"))
+        if "PurchaseValue" in col_index:
+            ws.cell(row=r, column=col_index["PurchaseValue"], value=row.get("PurchaseValue"))
+        if "NumOfDays" in col_index:
+            ws.cell(row=r, column=col_index["NumOfDays"], value=row.get("NumOfDays"))
+        if "RemainPeriod" in col_index:
+            ws.cell(row=r, column=col_index["RemainPeriod"], value=row.get("RemainPeriod"))
+        if "PaidValue" in col_index:
+            ws.cell(row=r, column=col_index["PaidValue"], value=row.get("PaidValue"))
+        if "CurrentAccrude" in col_index:
+            ws.cell(row=r, column=col_index["CurrentAccrude"], value=row.get("CurrentAccrude"))
+        if "Tax" in col_index:
+            ws.cell(row=r, column=col_index["Tax"], value=row.get("Tax"))
 
-        # Dates: keep as real dates; format will be applied later
+        # Date values (real dates; formatting applied later)
         if "PurchaseDate" in col_index:
             val = row.get("PurchaseDate")
             ws.cell(row=r, column=col_index["PurchaseDate"], value=val if pd.notna(val) else None)
@@ -134,26 +171,26 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
             val = row.get("MaturityDate")
             ws.cell(row=r, column=col_index["MaturityDate"], value=val if pd.notna(val) else None)
 
-        # NAV column:
+        # NAV column
         nav_col = col_index["NAV"]
         if r == 2:
-            # First data row: put actual NAV value
             ws.cell(row=r, column=nav_col, value=nav)
         else:
-            # Other rows: reference first NAV cell
-            ws.cell(row=r, column=nav_col, value="=$%s$2" % ws.cell(row=2, column=nav_col).coordinate[0])
+            first_nav_cell = ws.cell(row=2, column=nav_col).coordinate
+            ws.cell(row=r, column=nav_col, value=f"={first_nav_cell}")
 
-        # Formulas:
+        # Formulas
+
         # After Tax = RatePercent * 0.8
         if "After Tax" in col_index:
             c_rate = ws.cell(row=r, column=col_index["RatePercent"]).coordinate
             ws.cell(row=r, column=col_index["After Tax"], value=f"={c_rate}*0.8")
 
-        # WeightFromNAV = PurchaseValue / NAV (always divided by NAV in row 2)
+        # WeightFromNAV = PurchaseValue / NAV (same row)
         if "WeightFromNAV" in col_index:
             c_purchase = ws.cell(row=r, column=col_index["PurchaseValue"]).coordinate
-            nav_cell = ws.cell(row=2, column=nav_col).coordinate
-            ws.cell(row=r, column=col_index["WeightFromNAV"], value=f"={c_purchase}/${nav_cell}$".replace("$", ""))
+            c_nav = ws.cell(row=r, column=nav_col).coordinate
+            ws.cell(row=r, column=col_index["WeightFromNAV"], value=f"={c_purchase}/{c_nav}")
 
         # AvgReturn = After Tax * WeightFromNAV
         if "AvgReturn" in col_index:
@@ -167,10 +204,38 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
             c_remain = ws.cell(row=r, column=col_index["RemainPeriod"]).coordinate
             ws.cell(row=r, column=col_index["Avg # Of Days"], value=f"={c_weight}*{c_remain}")
 
-    # TOTAL row with SUM formulas
+        # Price = 1 / ((NumOfDays * RatePercent) / 365) + 1
+        if "Price" in col_index:
+            c_days = ws.cell(row=r, column=col_index["NumOfDays"]).coordinate
+            c_rate = ws.cell(row=r, column=col_index["RatePercent"]).coordinate
+            ws.cell(
+                row=r,
+                column=col_index["Price"],
+                value=f"=1/(({c_days}*{c_rate})/365)+1"
+            )
+
+        # PX = ROUND(Price, 5)
+        if "PX" in col_index and "Price" in col_index:
+            c_price = ws.cell(row=r, column=col_index["Price"]).coordinate
+            ws.cell(
+                row=r,
+                column=col_index["PX"],
+                value=f"=ROUND({c_price},5)"
+            )
+
+        # Present Value = PurchaseValue * PX
+        if "Present Value" in col_index:
+            c_purchase = ws.cell(row=r, column=col_index["PurchaseValue"]).coordinate
+            c_px = ws.cell(row=r, column=col_index["PX"]).coordinate
+            ws.cell(
+                row=r,
+                column=col_index["Present Value"],
+                value=f"={c_purchase}*{c_px}"
+            )
+
+    # TOTAL row with SUM formulas (same as before)
     ws.cell(row=total_row_idx, column=col_index["Bank"], value="TOTAL")
 
-    # Helper to add SUM formula for a column
     def add_sum(col_name):
         c_idx = col_index[col_name]
         col_letter = ws.cell(row=1, column=c_idx).column_letter
@@ -180,30 +245,38 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
             value=f"=SUM({col_letter}2:{col_letter}{last_data_row})"
         )
 
-    # Columns to sum
     for cname in ["FaceValue", "PurchaseValue", "AvgReturn", "Avg # Of Days",
                   "PaidValue", "CurrentAccrude", "Tax"]:
         if cname in col_index:
             add_sum(cname)
 
-    # NAV in total row = NAV of first row
-    ws.cell(row=total_row_idx, column=col_index["NAV"], value=f"={ws.cell(row=2, column=col_index['NAV']).coordinate}")
+    # NAV in TOTAL row = NAV in first data row
+    ws.cell(
+        row=total_row_idx,
+        column=col_index["NAV"],
+        value=f"={ws.cell(row=2, column=col_index['NAV']).coordinate}"
+    )
 
-    # Number formatting: commas + 2 decimals
-    number_fmt = '#,##0.00'
+    # Number formatting
+    number_fmt_2 = '#,##0.00'
+    number_fmt_5 = '#,##0.00000'
+
     numeric_columns = [
-        "FaceValue", "RatePercent", "After Tax", "PurchaseValue", "WeightFromNAV",
-        "AvgReturn", "NumOfDays", "RemainPeriod", "Avg # Of Days",
+        "FaceValue", "RatePercent", "After Tax", "Price", "PX",
+        "PurchaseValue", "Present Value", "WeightFromNAV", "AvgReturn",
+        "NumOfDays", "RemainPeriod", "Avg # Of Days",
         "PaidValue", "CurrentAccrude", "Tax", "NAV"
     ]
+
     for cname in numeric_columns:
         if cname not in col_index:
             continue
         c_idx = col_index[cname]
+        fmt = number_fmt_5 if cname == "PX" else number_fmt_2
         for r in range(2, total_row_idx + 1):
             cell = ws.cell(row=r, column=c_idx)
             if isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith("=")):
-                cell.number_format = number_fmt
+                cell.number_format = fmt
 
     # Date formatting: dd-mm-yyyy
     date_fmt = "DD-MM-YYYY"
