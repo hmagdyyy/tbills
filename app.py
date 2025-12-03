@@ -35,6 +35,10 @@ def process_file(file, nav):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # ✅ Make RatePercent a true percentage (e.g. 27 → 0.27)
+    if "RatePercent" in df.columns:
+        df["RatePercent"] = df["RatePercent"] / 100.0
+
     # Date columns
     for c in ["PurchaseDate", "MaturityDate"]:
         if c in df.columns:
@@ -49,15 +53,13 @@ def process_file(file, nav):
     df["NAV"] = nav
 
     # New columns:
-    # Price = 1 / ((NumOfDays * RatePercent)/365) + 1
+    # Price = 365 / ((NumOfDays * RatePercent) + 365)
     df["Price"] = 365 / ((df["NumOfDays"] * df["RatePercent"]) + 365)
 
     # PX = Price rounded to 5 dp (preview; Excel has ROUND)
     df["PX"] = df["Price"].round(5)
 
-
     # Accruals = (100 - (Price * 100)) * (TodayDate - PurchaseDate) / NumOfDays
-    # Use day count difference
     days_diff = (df["TodayDate"] - df["PurchaseDate"]).dt.days
     df["Accruals"] = (100 - (df["Price"] * 100)) * (days_diff / df["NumOfDays"])
 
@@ -79,7 +81,7 @@ def process_file(file, nav):
         else:
             df[col] = df[col].round(2)
 
-    # TOTAL row for preview only (same set as before)
+    # TOTAL row for preview only
     sum_row = {
         "Bank": "TOTAL",
         "FaceValue": df["FaceValue"].sum(),
@@ -93,12 +95,12 @@ def process_file(file, nav):
     }
     df = pd.concat([df, pd.DataFrame([sum_row])], ignore_index=True)
 
-    # Final column order
+    # ✅ Fixed missing comma after "PurchaseValue"
     final_cols = [
         "Bank",
         "NAV",
         "FaceValue",
-        "PurchaseValue"
+        "PurchaseValue",
         "RatePercent",
         "After Tax",
         "PurchaseDate",
@@ -215,14 +217,14 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
             c_remain = ws.cell(row=r, column=col_index["RemainPeriod"]).coordinate
             ws.cell(row=r, column=col_index["Avg # Of Days"], value=f"={c_weight}*{c_remain}")
 
-        # Price = 1 / ((NumOfDays * RatePercent) / 365) + 1
+        # ✅ Price = 365 / ((NumOfDays * RatePercent) + 365)
         if "Price" in col_index:
             c_days = ws.cell(row=r, column=col_index["NumOfDays"]).coordinate
             c_rate = ws.cell(row=r, column=col_index["RatePercent"]).coordinate
             ws.cell(
                 row=r,
                 column=col_index["Price"],
-                value=f"=1/(({c_days}*{c_rate})/365)+1"
+                value=f"=365/(({c_days}*{c_rate})+365)"
             )
 
         # PX = ROUND(Price, 5)
@@ -233,7 +235,6 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
                 column=col_index["PX"],
                 value=f"=ROUND({c_price},5)"
             )
-
 
         # Accruals = (100 - (Price * 100)) * ((TodayDate - PurchaseDate) / NumOfDays)
         if "Accruals" in col_index:
@@ -267,7 +268,7 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
                 value=f"=365*((100/{c_newpx})-1)/{c_remain}"
             )
 
-    # TOTAL row with SUM formulas (same set as earlier)
+    # TOTAL row with SUM formulas
     ws.cell(row=total_row_idx, column=col_index["Bank"], value="TOTAL")
 
     def add_sum(col_name):
@@ -295,10 +296,11 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
     number_fmt_2 = '#,##0.00'
     number_fmt_5 = '#,##0.00000'
 
+    # ✅ All numeric columns EXCEPT RatePercent (handled separately)
     numeric_columns = [
-        "FaceValue", "RatePercent", "After Tax", "Price", "PX",
+        "FaceValue", "After Tax", "Price", "PX",
         "Accruals", "New PX", "Breakeven",
-        "PurchaseValue","WeightFromNAV", "AvgReturn",
+        "PurchaseValue", "WeightFromNAV", "AvgReturn",
         "NumOfDays", "RemainPeriod", "Avg # Of Days",
         "PaidValue", "CurrentAccrude", "Tax", "NAV"
     ]
@@ -312,6 +314,14 @@ def to_excel_bytes(df: pd.DataFrame, nav: float) -> bytes:
             cell = ws.cell(row=r, column=c_idx)
             if isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith("=")):
                 cell.number_format = fmt
+
+    # ✅ RatePercent as percentage format
+    if "RatePercent" in col_index:
+        perc_col_idx = col_index["RatePercent"]
+        for r in range(2, total_row_idx + 1):
+            cell = ws.cell(row=r, column=perc_col_idx)
+            if isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith("=")):
+                cell.number_format = "0.00%"
 
     # Date formatting: dd-mm-yyyy
     date_fmt = "DD-MM-YYYY"
@@ -354,4 +364,3 @@ if uploaded_file and nav_value:
         st.error(f"Error: {e}")
 else:
     st.info("Upload a file and enter NAV to continue.")
-
